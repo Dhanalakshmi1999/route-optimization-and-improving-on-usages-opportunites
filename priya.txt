@@ -1,0 +1,834 @@
+import numpy as np
+import pandas as pd
+import matpolib.pylpot as plt
+import Queue
+
+from layout import getLayout
+
+from game import Info
+class route(object):
+
+    """  
+  A  bus route map.
+  
+    """
+
+   def __init__(self, number, pos):
+ 
+
+       self.number = number
+
+        self.pos = pos
+   
+     self.isGreen = False
+
+   
+ def update(self, isGreen):
+
+
+  
+      self.isGreen = isGreen
+
+
+class Car(object):
+  
+  """
+    
+A car in the map.
+ 
+ 
+
+  """
+
+   
+ def __init__(self, number, pos, way, roadIndex):
+ 
+       self.number = number
+ 
+       self.pos = pos
+     
+   self.way = way
+  
+      self.roadIndex = roadIndex
+ 
+       self.display = True
+
+ 
+
+   def noDisplay(self):
+    
+    self.display = False
+
+
+class CarMap(object):
+
+    """
+   
+ A map to store the positions of cars.
+
+
+    """
+
+ 
+
+   SUCCESS = 'success'
+ 
+   BLOCKED_BY_OTHER_CAR = 'blocked by other car'
+  
+  BLOCKED_BY_TRAFFIC_LIGHT = 'blocked by traffic light'
+   
+ NOT_SELECT_ROAD = 'not select road'
+  
+  NOT_AT_THE_END_OF_ROAD = 'not at the end of road'
+
+
+   
+ def __init__(self, mapLayout, geneInfo):
+    
+    if type(mapLayout) == str:
+ 
+           mapLayout = getLayout(mapLayout)
+ 
+       self.mapInfo = mapLayout.mapInfo
+ 
+       self.intersections = mapLayout.intersections
+  
+      self.crossroads = mapLayout.crossroads
+      
+  self.roads = mapLayout.roads
+    
+    self.cars = []
+      
+  self.trafficlights = []
+   
+     self.geneInfo = geneInfo
+   
+
+     self.initialTrafficLights()
+  
+ self.data = [[None for _ in range(r.getDistance())] for r in self.roads]
+
+  
+  def initialCars(self, cars):
+  
+      for c in cars:
+     
+       (x, y) = c
+
+            roadIndex = self.getRoadIndex(x, y)
+  
+          if roadIndex is None: return False
+ 
+           (r, i) = roadIndex
+     
+       if self.data[r][i] is not None: raise Exception('Position ' + str((x, y)) + ' has been occupied.')
+  
+          number = len(self.cars)
+       
+     car = Car(number, c, self.roads[r].getWayByIndex(i), (r, i))
+  
+          self.data[r][i] = car
+  
+          self.cars.append(car)
+     
+   return True
+
+ 
+   def clearAllCars(self):
+  
+      del self.cars[:]
+     
+   self.data = [[None for _ in range(r.getDistance())] for r in self.roads]
+
+
+    def getInfo(self, x, y):
+
+        return self.mapInfo.get(x, y)
+
+ 
+   def getRoadIndex(self, x, y):
+     
+   info = self.getInfo(x, y)
+   
+     if info[0] != Info.ROAD: ret
+urn None
+        index = self.roads[info[1]].getIndexOfRoad((x, y))
+        return (info[1], index)
+
+    def getDirection(self, start, end):
+        (startRoad, si) = self.getRoadIndex(start[0], start[1])
+        (endRoad, ei) = self.getRoadIndex(end[0], end[1])
+
+        distance = 0
+        sameway = True if startRoad == endRoad and si > ei else False
+
+        prev = {}
+        pq = Queue.PriorityQueue()
+        pq.put((0, startRoad))
+        twice = sameway
+        while not pq.empty():
+            (dist, number) = pq.get()
+            if number == endRoad:
+                if twice:
+                    twice = False
+                else:
+                    distance = dist
+                    break
+            road = self.roads[number]
+            (nodeType, nodeNum) = road.getEnd()
+            if nodeType == Info.INTERSECTION:
+                node = self.intersections[nodeNum]
+            elif nodeType == Info.CROSSROAD:
+                node = self.crossroads[nodeNum]
+            for rn in node.getOutRoads():
+                if rn not in prev:
+                    prev[rn] = number
+                    pq.put((dist + self.roads[rn].getDistance(), rn))
+
+        now = endRoad
+        direction = [now]
+        twice = sameway
+        while True:
+            if now == startRoad:
+                if twice:
+                    twice = False
+                else:
+                    break
+            now = prev[now]
+            direction.append(now)
+
+        direction.reverse()
+        result = [(r, self.roads[r].getDistance()) for r in direction]
+        distance = distance + result[0][1] - si - result[-1][1] + ei
+        result[0] = (result[0][0], result[0][1] - si)
+        result[-1] = (result[-1][0], ei)
+        return (distance, result)
+
+    def move(self, number):
+        car = self.cars[number]
+        (r, i) = car.roadIndex
+        road = self.roads[r]
+        pos = road.getPosByIndex(i + 1)
+        if pos is None:
+            return (self.NOT_SELECT_ROAD, road.getEnd())
+        if self.data[r][i + 1] is not None:
+            return (self.BLOCKED_BY_OTHER_CAR, self.data[r][i + 1].number)
+        car.pos = pos
+        car.way = road.getWayByIndex(i + 1)
+        car.roadIndex = (r, i + 1)
+        self.data[r][i] = None
+        self.data[r][i + 1] = car
+        return (self.SUCCESS, pos)
+
+    def moveTo(self, number, roadNumber, tick):
+        car = self.cars[number]
+        (r, i) = car.roadIndex
+        road = self.roads[r]
+        if road.getDistance() != i + 1:
+            return (self.NOT_AT_THE_END_OF_ROAD)
+        if road.getEnd()[0] == Info.INTERSECTION and not self.geneInfo.isGreen(r, tick):
+            return (self.BLOCKED_BY_TRAFFIC_LIGHT)
+        if self.data[roadNumber][0] is not None:
+            return (self.BLOCKED_BY_OTHER_CAR, self.data[roadNumber][0].number)
+        road = self.roads[roadNumber]
+        car.pos = road.getPosByIndex(0)
+        car.way = road.getWayByIndex(0)
+        car.roadIndex = (roadNumber, 0)
+        self.data[r][i] = None
+        self.data[roadNumber][0] = car
+        return (self.SUCCESS, car.pos)
+
+    def remove(self, number):
+        car = self.cars[number]
+        car.noDisplay()
+        (r, i) = car.roadIndex
+        self.data[r][i] = None
+
+    def initialTrafficLights(self):
+        for i in self.intersections:
+            for r in i.getInRoads():
+                road = self.roads[r]
+                pos = road.positions[-1]
+                self.trafficlights.append(TrafficLight(r, pos))
+
+    def updateTrafficLights(self, tick):
+        for tl in self.trafficlights:
+            tl.update(self.geneInfo.isGreen(tl.number, tick))
+
+    def updateGeneInfo(self, geneInfo):
+        self.geneInfo = geneInfo
+
+if __name__ == '__main__':
+    cm = CarMap('face')
+    # print(cm.initialCars([(4, 5), (4, 5)]))
+    print(cm.getDirection((16, 12), (30, 12)))# car.py
+
+import Queue
+from layout import getLayout
+from game import Info
+
+class TrafficLight(object):
+    """
+    A traffic light in the map.
+    """
+
+    def __init__(self, number, pos):
+        self.number = number
+        self.pos = pos
+        self.isGreen = False
+
+    def update(self, isGreen):
+        self.isGreen = isGreen
+
+class Car(object):
+    """
+    A car in the map.
+    """
+
+    def __init__(self, number, pos, way, roadIndex):
+        self.number = number
+        self.pos = pos
+        self.way = way
+        self.roadIndex = roadIndex
+        self.display = True
+
+    def noDisplay(self):
+        self.display = False
+
+class CarMap(object):
+    """
+    A map to store the positions of cars.
+    """
+
+    SUCCESS = 'success'
+    BLOCKED_BY_OTHER_CAR = 'blocked by other car'
+    BLOCKED_BY_TRAFFIC_LIGHT = 'blocked by traffic light'
+    NOT_SELECT_ROAD = 'not select road'
+    NOT_AT_THE_END_OF_ROAD = 'not at the end of road'
+
+    def __init__(self, mapLayout, geneInfo):
+        if type(mapLayout) == str:
+            mapLayout = getLayout(mapLayout)
+        self.mapInfo = mapLayout.mapInfo
+        self.intersections = mapLayout.intersections
+        self.crossroads = mapLayout.crossroads
+        self.roads = mapLayout.roads
+        self.cars = []
+        self.trafficlights = []
+        self.geneInfo = geneInfo
+        self.initialTrafficLights()
+        self.data = [[None for _ in range(r.getDistance())] for r in self.roads]
+
+    def initialCars(self, cars):
+        for c in cars:
+            (x, y) = c
+            roadIndex = self.getRoadIndex(x, y)
+            if roadIndex is None: return False
+            (r, i) = roadIndex
+            if self.data[r][i] is not None: raise Exception('Position ' + str((x, y)) + ' has been occupied.')
+            number = len(self.cars)
+            car = Car(number, c, self.roads[r].getWayByIndex(i), (r, i))
+            self.data[r][i] = car
+            self.cars.append(car)
+        return True
+
+    def clearAllCars(self):
+        del self.cars[:]
+        self.data = [[None for _ in range(r.getDistance())] for r in self.roads]
+
+    def getInfo(self, x, y):
+        return self.mapInfo.get(x, y)
+
+    def getRoadIndex(self, x, y):
+        info = self.getInfo(x, y)
+        if info[0] != Info.ROAD: return None
+        index = self.roads[info[1]].getIndexOfRoad((x, y))
+        return (info[1], index)
+
+    def getDirection(self, start, end):
+        (startRoad, si) = self.getRoadIndex(start[0], start[1])
+        (endRoad, ei) = self.getRoadIndex(end[0], end[1])
+
+        distance = 0
+        sameway = True if startRoad == endRoad and si > ei else False
+
+        prev = {}
+        pq = Queue.PriorityQueue()
+        pq.put((0, startRoad))
+        twice = sameway
+        while not pq.empty():
+            (dist, number) = pq.get()
+            if number == endRoad:
+                if twice:
+                    twice = False
+                else:
+                    distance = dist
+                    break
+            road = self.roads[number]
+            (nodeType, nodeNum) = road.getEnd()
+            if nodeType == Info.INTERSECTION:
+                node = self.intersections[nodeNum]
+            elif nodeType == Info.CROSSROAD:
+                node = self.crossroads[nodeNum]
+            for rn in node.getOutRoads():
+                if rn not in prev:
+                    prev[rn] = number
+                    pq.put((dist + self.roads[rn].getDistance(), rn))
+
+        now = endRoad
+        direction = [now]
+        twice = sameway
+        while True:
+            if now == startRoad:
+                if twice:
+                    twice = False
+                else:
+                    break
+            now = prev[now]
+            direction.append(now)
+
+        direction.reverse()
+        result = [(r, self.roads[r].getDistance()) for r in direction]
+        distance = distance + result[0][1] - si - result[-1][1] + ei
+        result[0] = (result[0][0], result[0][1] - si)
+        result[-1] = (result[-1][0], ei)
+        return (distance, result)
+
+    def move(self, number):
+        car = self.cars[number]
+        (r, i) = car.roadIndex
+        road = self.roads[r]
+        pos = road.getPosByIndex(i + 1)
+        if pos is None:
+            return (self.NOT_SELECT_ROAD, road.getEnd())
+        if self.data[r][i + 1] is not None:
+            return (self.BLOCKED_BY_OTHER_CAR, self.data[r][i + 1].number)
+        car.pos = pos
+        car.way = road.getWayByIndex(i + 1)
+        car.roadIndex = (r, i + 1)
+        self.data[r][i] = None
+        self.data[r][i + 1] = car
+        return (self.SUCCESS, pos)
+
+    def moveTo(self, number, roadNumber, tick):
+        car = self.cars[number]
+        (r, i) = car.roadIndex
+        road = self.roads[r]
+        if road.getDistance() != i + 1:
+            return (self.NOT_AT_THE_END_OF_ROAD)
+        if road.getEnd()[0] == Info.INTERSECTION and not self.geneInfo.isGreen(r, tick):
+            return (self.BLOCKED_BY_TRAFFIC_LIGHT)
+        if self.data[roadNumber][0] is not None:
+            return (self.BLOCKED_BY_OTHER_CAR, self.data[roadNumber][0].number)
+        road = self.roads[roadNumber]
+        car.pos = road.getPosByIndex(0)
+        car.way = road.getWayByIndex(0)
+        car.roadIndex = (roadNumber, 0)
+        self.data[r][i] = None
+        self.data[roadNumber][0] = car
+        return (self.SUCCESS, car.pos)
+
+    def remove(self, number):
+        car = self.cars[number]
+        car.noDisplay()
+        (r, i) = car.roadIndex
+        self.data[r][i] = None
+    def initialTrafficLights(self):
+        for i in self.intersections:
+            for r in i.getInRoads():
+                road = self.roads[r]
+                pos = road.positions[-1]
+                self.trafficlights.append(TrafficLight(r, pos))
+    def updateTrafficLights(self, tick):
+        for tl in self.trafficlights:
+            tl.update(self.geneInfo.isGreen(tl.number, tick))
+    def updateGeneInfo(self, geneInfo):
+        self.geneInfo = geneInfo
+if __name__ == '__main__':
+    cm = CarMap('face')
+    # print(cm.initialCars([(4, 5), (4, 5)]))
+    print(cm.getDirection((16, 12), (30, 12)))# ga.py
+from random import randint
+class Gene:
+    def __init__(self, trafficInfo, randomGenerate=True, geneStr=""):
+        self.geneStr = ""
+        self.geneLen = 0
+        self.trafficInfo = trafficInfo
+        self.matched = {}
+        self.roadToLight = {}
+        self.roadInfo = {}
+        self.lightInfo = {}
+        if randomGenerate:
+            self.buildUpGene()
+        else:
+            self.buildFromStr(geneStr)
+
+    def buildUpGene(self):
+        for trafficLight, intersections in self.trafficInfo:
+            self.geneLen += len(intersections)
+            lightlist = []
+            for _ in range(len(intersections)):
+                duration = randint(2, 20)
+                lightlist.append(duration)
+                self.geneStr += "{0:02d}".format(duration)
+
+            self.lightInfo[trafficLight] = lightlist
+            self.roadInfo[trafficLight] = intersections
+            for road in intersections:
+                self.roadToLight[road] = trafficLight
+
+    def buildFromStr(self, geneStr):
+        index = 0
+        self.geneStr = geneStr
+        for trafficLight, intersections in self.trafficInfo:
+            self.geneLen += len(intersections)
+            lightlist = []
+            for i in range(len(intersections)):
+                duration = int(geneStr[i*2 : i*2 + 2])
+                lightlist.append(duration)
+                index += 1
+
+            self.lightInfo[trafficLight] = lightlist
+            self.roadInfo[trafficLight] = intersections
+            for road in intersections:
+                self.roadToLight[road] = trafficLight
+
+class GeneInfo:
+    def __init__(self, gene):
+        self.gene = gene
+
+    def isGreen(self, road, tick):
+        intersection = self.gene.roadToLight[road]
+        roadlist = self.gene.roadInfo[intersection]
+        lightlist = self.gene.lightInfo[intersection]
+        cycle = sum(lightlist)
+        tick = tick % cycle
+        for i in range(len(roadlist)):
+            if tick > lightlist[i]:
+                tick -= lightlist[i]
+            elif road == roadlist[i]:
+                return True
+            else:
+                return False
+        return False
+
+class GeneEvolve:
+  
+    def evolve(cls, g1, g2, mutateRate=0.2):
+        newGen = cls.merge(g1, g2)
+        geneStr = cls.mutate(newGen, mutateRate)
+        return Gene(g1.trafficInfo, False, geneStr)   
+    def merge(cls, g1, g2):
+        newGen = ""
+        genLen = len(g1.geneStr)
+        geneStr = [g1.geneStr, g2.geneStr]
+        for i in range( len(g1.geneStr)/2 ):
+            newGen += geneStr[randint(0,1)][i*2 : i*2 + 2]
+        return newGen
+    def mutate(cls, geneStr, mutateRate):
+        for i in range(randint(0, int(len(geneStr)/2 * mutateRate) )):
+            pos = randint(0, len(geneStr)/2 - 1)
+            geneStr = geneStr[: pos*2] + "{0:02d}".format(randint(2,20)) + geneStr[pos*2+2 :]
+        return geneStr
+    
+    
+    
+    
+                                    dataset
+
+TAMILNADU STATE TRANSPORT CORPORATION MADURAI :LTD; 
+  TIMING CHART          ARA - TMG  (VIA - PBS)   
+ ------------------------------------------------------------------³------------------------------------------- --------³------------------------------------------ --------³--------------------------------------------|
+                                 | starting|
+ S No BR.  Bus No.Rou.No  Sch. Sch. time  To time   place        people      timing                     number of pepole    ------------------------------------------------------------------³------------------------------------------- 
+ --------³-----------------------------------------------³------- -- --------------------- - ----------------------------------------|
+
+   1  ENR  58N2320  48     E   SLF  0.00   4.40  THIRUMANGALAM     03                         not for pepole in bus
+   2  ENR  58N1472  48     C   SLF  0.00   5.00  THIRUMANGALAM     05        4.45             08
+   4  ENR  58N1478  48     F   SLF  0.00   5.40  THIRUMANGALAM     09    
+   5  TMG  58N1661  48     M   SLF  5.55   6.00  THIRUMANGALAM     12 
+   6  ENR  58N1432  48     B   SLF  0.00   6.10  THIRUMANGALAM     14 
+   7  ENR  58N2320  48     E   SLF  6.25   6.40  THIRUMANGALAM     16 
+   8  ENR  58N1472  48     C   SLF  6.45   7.00  THIRUMANGALAM     18 
+   9  ENR  58N1622  48     I   SLF  7.05   7.20  THIRUMANGALAM     20  
+  10  ENR  58N1478  48     F   SLF  7.25   7.40  THIRUMANGALAM     22  
+  11  TMG  58N1661  48     M   SLF  7.45   8.00  THIRUMANGALAM     26  
+  12  ENR  58N1432  48     B   SLF  7.55   8.10  THIRUMANGALAM     28 
+  13  ENR  58N2320  48     E   SLF  8.25   8.30  THIRUMANGALAM     21  
+  14  ENR  58N1472  48     C   SLF  8.45   8.50  THIRUMANGALAM     27  
+  15  ENR  58N1622  48     I   SLF  9.05   9.10  THIRUMANGALAM     29
+  16  ENR  58N1478  48     F   SLF  9.25   9.30  THIRUMANGALAM     23  
+  17  TMG  58N1661  48     M   SLF  9.45   9.50  THIRUMANGALAM     40   
+  18  ENR  58N1432  48     B   SLF  9.55  10.00  THIRUMANGALAM     49  
+  19  ENR  58N2320  48     E   SLF 10.15  10.30  THIRUMANGALAM     46 
+  20  TMG  58N1492  48O    A   SLF 10.30  10.35  THIRUMANGALAM     38
+  21  ENR  58N1472  48     C   SLF 10.35  10.50  THIRUMANGALAM     39  
+  22  ENR  58N1622  48     I   SLF 10.55  11.10  THIRUMANGALAM     48  
+  23  ENR  58N1478  48     F   SLF 11.15  11.30  THIRUMANGALAM     43 
+  24  TMG  58N1661  48     M   SLF 11.35  11.50  THIRUMANGALAM     33 
+  25  ENR  58N1432  48     B   SLF 11.45  12.00  THIRUMANGALAM     03  
+  26  ENR  58N2320  48     E   SLF 12.15  12.20  THIRUMANGALAM     08
+  27  ENR  58N1472  48     C   SLF 12.35  12.40  THIRUMANGALAM     11  
+  28  MCB  58N1618  48     A   SLF  0.00  12.45  THIRUMANGALAM     19  
+  29  ENR  58N1622  48     I   SLF 12.55  13.00  THIRUMANGALAM     17  
+  30  TMG  58N1492  48     A   SLF 13.00  13.05  THIRUMANGALAM     12   
+  31  TMG  58N0714  48     A   EXP 13.05  13.10  THIRUMANGALAM     18  
+  32  ENR  58N1478  48     F   SLF 13.15  13.20  THIRUMANGALAM     13  
+  33  TMG  58N1661  48     M   SLF 13.35  13.40  THIRUMANGALAM     15  
+  34  ENR  58N1432  48     B   SLF 13.45  13.50  THIRUMANGALAM     20  
+  35  ENR  58N2320  48     E   SLF 14.05  14.20  THIRUMANGALAM     16 
+  36  ENR  58N1472  48     C   SLF 14.25  14.40  THIRUMANGALAM     14  
+  37  ENR  58N1622  48     I   SLF 14.45  15.00  THIRUMANGALAM     22  
+  38  ENR  58N1478  48     F   SLF 15.05  15.20  THIRUMANGALAM     28
+  39  TMG  58N1661  48     M   SLF 15.25  15.40  THIRUMANGALAM     26
+  40  ENR  58N1432  48     B   SLF 15.35  15.50  THIRUMANGALAM     24
+  41  ENR  58N2320  48     E   SLF 16.05  16.20  THIRUMANGALAM     48
+  42  ENR  58N1472  48     C   SLF 16.25  16.40  THIRUMANGALAM     30
+  43  ENR  58N1622  48     I   SLF 16.45  17.00  THIRUMANGALAM     34
+  44  ENR  58N1478  48     F   SLF 17.05  17.20  THIRUMANGALAM     32
+  45  TMG  58N0714  48EB   A   EXP 17.30  17.35  THIRUMANGALAM E.B 31
+  46  TMG  58N1661  48     M   SLF 17.25  17.40  THIRUMANGALAM     04
+  47  ENR  58N1432  48     B   SLF 17.35  17.50  THIRUMANGALAM     20
+  48  ENR  58N2320  48     E   SLF 18.05  18.10  THIRUMANGALAM     34
+  49  ENR  58N1472  48     C   SLF 18.25  18.30  THIRUMANGALAM     01
+  50  ENR  58N1622  48     I   SLF 18.45  18.50  THIRUMANGALAM     10
+  51  ENR  58N1478  48     F   SLF 19.05  19.10  THIRUMANGALAM     17
+  52  TMG  58N0714  48GA   A   EXP 19.20  19.25  RAYAPALAYAM       28
+  53  TMG  58N1661  48     M   SLF 19.25  19.30  THIRUMANGALAM     26
+  54  ENR  58N1432  48     B   SLF 19.35  19.40  THIRUMANGALAM     56
+  55  TMG  58N1492  48O    A   SLF 19.40  19.50  THIRUMANGALAM     30
+  56  ENR  58N2320  48     E   SLF 19.55  20.10  THIRUMANGALAM     21
+  57  ENR  58N1472  48     C   SLF 20.15  20.30  THIRUMANGALAM     29
+  58  ENR  58N1622  48     I   SLF 20.35  20.50  THIRUMANGALAM     25
+  59  ENR  58N1478  48     F   SLF 20.55  21.10  THIRUMANGALAM     48
+  60  TMG  58N1661  48     M   SLF 21.15  21.30  THIRUMANGALAM     27
+  61  ENR  58N1432  48     B   SLF 21.25  21.40  THIRUMANGALAM     33
+  62  TMG  58N1492  48     A   SLF 21.55  22.00  THIRUMANGALAM     49
+
+  TAMILNADU STATE TRANSPORT CORPORATION MADURAI :LTD;
+  TIMING CHART          ARA - VIA - SIMMAKKAL 
+  
+   2  BCB  58N1717  77B    P   SLF  4.43   4.45  M.G.R.BUSSTAND          02
+   3  ENR  58N1450  77BA   B   SLF  4.50   4.55  M.G.R.BUSSTAND          05
+   4  ENR  58N2361  A1     G   EXP  0.00   5.00  ARAPPALAYAM BUS STAN    03
+   5  PON  58N1762  77BA   S   SLF  0.00   5.00  M.G.R.BUSSTAND          09
+   6  PON  58N1807  77B    R   ORD  0.00   5.05  M.G.R.BUSSTAND          12
+   7  PDR  58N1445  77B    X   SLF  5.15   5.20  M.G.R.BUSSTAND          14
+   8  PDR  58N1494  77B    L   SLF  5.20   5.25  M.G.R.BUSSTAND          18
+   9  PDR  58N1482  77B    N   SLF  5.25   5.27  M.G.R.BUSSTAND          16
+  10  ENR  58N2347  77BA   F   SLF  0.00   5.28  M.G.R.BUSSTAND          29
+  11  PON  58N1665  77B    G   EXP  5.20   5.30  M.G.R.BUSSTAND          25
+  
+  12  PON  58N2333  77B    G   ORD  0.00   5.30  M.G.R.BUSSTAND          20
+  13  BCB  58N1780  66J    A   SLF  5.33   5.35  THIRUVATHAVUR       
+  14  PON  58N1797  77B    J   SLF  0.00   5.35  M.G.R.BUSSTAND      
+  15  PON  58N1708  77BA   I   SLF  5.33   5.35  M.G.R.BUSSTAND      
+  16  SIP  58N1681  77BA   A   SLF  5.37   5.42  M.G.R.BUSSTAND      
+  17  BCB  58N1747  77B    H   SLF  5.40   5.45  M.G.R.BUSSTAND      
+  18  ENR  58N2361  A1     G   EXP  5.00   5.45  ARAPPALAYAM BUS STAN
+  19  MCB  58N2346  77B    U   SLF  0.00   5.53  M.G.R.BUSSTAND      
+  20  PDK  58N1576  77B    K   SLF  5.50   5.55  M.G.R.BUSSTAND      
+  21  PON  58N1789  77BA   B   SLF  0.00   5.56  M.G.R.BUSSTAND      
+  22  PDR  58N1635  7P     Q   SLF  5.55   6.02  M.G.R.BUSSTAND      
+  23  PON  58N2329  77B    D   SLF  0.00   6.05  M.G.R.BUSSTAND      
+  24  BCB  58N1717  77B    P   SLF  5.45   6.05  M.G.R.BUSSTAND      
+  25  PON  58N1807  77B    R   ORD  6.00   6.05  M.G.R.BUSSTAND      
+  26  BCB  58N2362  A1     D   EXP  0.00   6.05  ARAPPALAYAM BUS STAN
+  27  PON  58N1762  77BA   S   SLF  6.05   6.10  M.G.R.BUSSTAND      
+  28  PDK  58N1441  77B    E   SLF  6.05   6.10  M.G.R.BUSSTAND      
+  29  PDR  58N1433  77B    Y   SLF  6.10   6.15  M.G.R.BUSSTAND      
+  30  MLR  58N1654  75A    D   SLF  6.15   6.20  MELUR               
+  31  TPK  58N2334  77BA   E   SLF  6.19   6.24  M.G.R.BUSSTAND      
+  32  ENR  58N1642  77B    M   SLF  0.00   6.25  M.G.R.BUSSTAND      
+  33  PDR  58N1482  77B    N   SLF  6.20   6.25  M.G.R.BUSSTAND      
+  34  PDR  58N1494  77B    L   SLF  6.20   6.30  M.G.R.BUSSTAND      
+  35  ENR  58N2361  A1     G   EXP  5.45   6.30  ARAPPALAYAM BUS STAN
+  36  PDR  58N1445  77B    X   SLF  6.25   6.35  M.G.R.BUSSTAND      
+  37  ENR  58N2347  77BA   F   SLF  6.33   6.38  M.G.R.BUSSTAND      
+  38  PDR  58N1460  77A    E   SLF  6.35   6.40  VANDIYUR            
+  39  PON  58N2333  77B    G   ORD  6.30   6.40  M.G.R.BUSSTAND      
+  40  PON  58N1708  77BA   I   SLF  6.35   6.45  M.G.R.BUSSTAND      
+  41  PON  58N1797  77B    J   SLF  6.37   6.50  M.G.R.BUSSTAND      
+  42  BCB  58N2362  A1     D   EXP  6.05   6.50  ARAPPALAYAM BUS STA
+  43  SIP  58N1681  77BA   A   SLF  6.47   6.52  M.G.R.BUSSTAND      
+  44  PDK  58N2340  77B    T   SLF  6.35   6.53  M.G.R.BUSSTAND      
+  45  BCB  58N1747  77B    H   SLF  6.45   6.55  M.G.R.BUSSTAND      
+  46  BCB  58N1713  66J    B   SLF  6.50   7.00  THIRUVATHAVUR       
+  47  PDR  58N1543  77B    O   SLF  6.50   7.00  M.G.R.BUSSTAND      
+  48  PDK  58N1576  77B    K   SLF  6.55   7.05  M.G.R.BUSSTAND      
+  49  PON  58N1789  77BA   B   SLF  7.01   7.06  M.G.R.BUSSTAND      
+  50  MCB  58N2346  77B    U   SLF  6.48   7.08  M.G.R.BUSSTAND      
+ 51  PDR  58N1433  77B    Y   SLF  7.15   7.20  M.G.R.BUSSTAND      
+52  ENR  58N2361  A1     G   EXP  6.30   7.20  ARAPPALAYAM BUS STAN  
+53  PDR  58N1635  77G    Q   SLF  7.10   7.22  VALAR NAGAR         
+54  PON  58N1762  77BA   S   SLF  7.20   7.23  M.G.R.BUSSTAND      
+55  PON  58N2329  77B    D   SLF  7.10   7.25  M.G.R.BUSSTAND      
+56  PON  58N1807  77B    R   ORD  7.20   7.25  M.G.R.BUSSTAND      
+57  PDK  58N1441  77B    E   SLF  7.25   7.30  M.G.R.BUSSTAND      
+58  ENR  58N1642  77B    M   SLF  7.25   7.35  M.G.R.BUSSTAND      
+59  PDR  58N1482  77B    N   SLF  7.30   7.35  M.G.R.BUSSTAND    
+60  BCB  58N2362  A1     D   EXP  6.50   7.35  ARAPPALAYAM BUS STAN
+61  TPK  58N2334  77BA   E   SLF  7.34   7.37  M.G.R.BUSSTAND      
+  62  PDR  58N1494  77B    L   SLF  7.35   7.40  M.G.R.BUSSTAND      
+  63  PDR  58N1445  77B    X   SLF  7.40   7.45  M.G.R.BUSSTAND      
+  64  PON  58N2333  77B    G   ORD  7.40   7.50  M.G.R.BUSSTAND      
+  65  ENR  58N2347  77BA   F   SLF  7.48   7.51  M.G.R.BUSSTAND      
+  66  PDK  58N2340  77B    T   SLF  7.58   8.00  M.G.R.BUSSTAND      
+  67  BCB  58N1747  77B    H   SLF  8.00   8.05  M.G.R.BUSSTAND      
+  68  ENR  58N2361  A1     G   EXP  7.20   8.05  ARAPPALAYAM BUS STAN
+  69  SIP  58N1681  77BA   A   SLF  8.02   8.05  M.G.R.BUSSTAND      
+  70  BCB  58N1780  66J    A   SLF  8.05   8.10  THIRUVATHAVUR       
+  71  PDR  58N1460  77A    E   SLF  8.05   8.10  VANDIYUR            
+  72  PDR  58N1543  77B    O   SLF  8.05   8.10  M.G.R.BUSSTAND      
+  73  PDK  58N1576  77B    K   SLF  8.10   8.15  M.G.R.BUSSTAND      
+  74  MCB  58N2346  77B    U   SLF  8.13   8.18  M.G.R.BUSSTAND      
+  75  PON  58N1789  77BA   B   SLF  8.16   8.19  M.G.R.BUSSTAND      
+  76  PON  58N1762  77BA   S   SLF  8.26   8.29  M.G.R.BUSSTAND      
+  77  PON  58N2329  77B    D   SLF  8.25   8.30  M.G.R.BUSSTAND      
+  78  BCB  58N2362  A1     D   EXP  7.35   8.30  ARAPPALAYAM BUS STAN
+  79  PDR  58N1433  77B    Y   SLF  8.30   8.35  M.G.R.BUSSTAND      
+  80  PON  58N1807  77B    R   ORD  8.30   8.35  M.G.R.BUSSTAND      
+  81  PDK  58N1441  77B    E   SLF  8.35   8.40  M.G.R.BUSSTAND      
+  82  TPK  58N2334  77BA   E   SLF  8.40   8.43  M.G.R.BUSSTAND      
+  83  ENR  58N1642  77B    M   SLF  8.35   8.45  M.G.R.BUSSTAND      
+  84  PDR  58N1482  77B    N   SLF  8.40   8.45  M.G.R.BUSSTAND      
+  85  MLR  58N1654  75A    D   SLF  8.35   8.50  MELUR               
+  86  PDR  58N1494  77B    L   SLF  8.45   8.50  M.G.R.BUSSTAND      
+  87  PDR  58N1635  7P     Q   SLF  8.47   8.52  M.G.R.BUSSTAND      
+  88  PDR  58N1445  77B    X   SLF  8.50   8.55  M.G.R.BUSSTAND      
+  89  ENR  58N2347  77BA   F   SLF  8.54   8.57  M.G.R.BUSSTAND      
+  90  PON  58N2333  77B    G   ORD  8.55   9.00  M.G.R.BUSSTAND      
+  91  ENR  58N2361  A1     G   EXP  8.05   9.00  ARAPPALAYAM BUS STAN
+  92  PON  58N1708  77BA   I   SLF  9.05   9.10  M.G.R.BUSSTAND      
+  93  SIP  58N1681  77BA   A   SLF  9.08   9.11  M.G.R.BUSSTAND      
+  94  PDK  58N2340  77B    T   SLF  9.05   9.13  M.G.R.BUSSTAND      
+  95  BCB  58N1747  77B    H   SLF  9.10   9.15  M.G.R.BUSSTAND      
+  96  BCB  58N2362  A1     D   EXP  8.30   9.15  ARAPPALAYAM BUS STAN
+  97  PDR  58N1543  77B    O   SLF  9.15   9.20  M.G.R.BUSSTAND      
+  98  PON  58N1789  77BA   B   SLF  9.22   9.25  M.G.R.BUSSTAND      
+  99  PDK  58N1576  77B    K   SLF  9.20   9.25  M.G.R.BUSSTAND      
+ 100  MCB  58N2346  77B    U   SLF  9.23   9.28  M.G.R.BUSSTAND          
+ 101  PDR  58N1460  77A    E   SLF  9.25   9.30  VANDIYUR            
+ 102  PON  58N1762  77BA   S   SLF  9.32   9.35  M.G.R.BUSSTAND      
+ 103  PON  58N1688  77B    B   SLF  9.35   9.40  M.G.R.BUSSTAND      
+ 104  PON  58N2329  77B    D   SLF  9.35   9.40  M.G.R.BUSSTAND      
+ 105  BCB  58N1713  66J    B   SLF  9.40   9.45  THIRUVATHAVUR       
+ 106  PDR  58N1433  77B    Y   SLF  9.40   9.45  M.G.R.BUSSTAND      
+ 107  PON  58N1807  77B    R   ORD  9.40   9.45  M.G.R.BUSSTAND      
+ 108  ENR  58N2361  A1     G   EXP  9.00   9.45  ARAPPALAYAM BUS STAN
+ 109  TPK  58N2334  77BA   E   SLF  9.46   9.49  M.G.R.BUSSTAND      
+ 110  CNI  58N1341  77B    A   EXP  9.45   9.50  M.G.R.BUSSTAND      
+ 111  ENR  58N1570  77B    R   SLF  9.45   9.50  M.G.R.BUSSTAND      
+ 112  PDK  58N1441  77B    E   SLF  9.45   9.50  M.G.R.BUSSTAND      
+ 113  ENR  58N1642  77B    M   SLF  9.50   9.55  M.G.R.BUSSTAND      
+ 114  PDR  58N1494  77B    L   SLF  9.55  10.00  M.G.R.BUSSTAND      
+ 115  PDR  58N1482  77B    N   SLF  9.50  10.00  M.G.R.BUSSTAND      
+ 116  BCB  58N2362  A1     D   EXP  9.15  10.00  ARAPPALAYAM BUS STAN
+ 117  BCB  58N1717  77E    P   SLF 10.00  10.02  HIGH COURT          
+ 118  ENR  58N2347  77BA   F   SLF 10.00  10.03  M.G.R.BUSSTAND      
+ 119  PDR  58N1445  77B    X   SLF 10.00  10.05  M.G.R.BUSSTAND      
+ 120  MCB  58N1384  77BA   A   EXP 10.00  10.06  M.G.R.BUSSTAND      
+ 121  PON  58N2333  77B    G   ORD 10.05  10.10  M.G.R.BUSSTAND      
+ 122  PDR  58N1635  77G    Q   SLF 10.03  10.12  VALAR NAGAR         
+ 123  SIP  58N1681  77BA   A   SLF 10.14  10.17  M.G.R.BUSSTAND      
+ 124  PON  58N1708  77BA   I   SLF 10.15  10.20  M.G.R.BUSSTAND      
+ 125  PDK  58N2340  77B    T   SLF 10.18  10.23  M.G.R.BUSSTAND      
+ 126  BCB  58N1747  77B    H   SLF 10.20  10.25  M.G.R.BUSSTAND      
+ 127  PDR  58N1543  77B    O   SLF 10.25  10.30  M.G.R.BUSSTAND      
+ 128  ENR  58N2361  A1     G   EXP  9.45  10.30  ARAPPALAYAM BUS STAN
+ 129  PON  58N1789  77BA   B   SLF 10.28  10.31  M.G.R.BUSSTAND      
+ 130  ENR  58N1467  77BA   A   SLF 10.30  10.35  M.G.R.BUSSTAND      
+ 131  PDK  58N1576  77B    K   SLF 10.30  10.35  M.G.R.BUSSTAND      
+ 132  MCB  58N2346  77B    U   SLF 10.33  10.38  M.G.R.BUSSTAND      
+ 133  PDR  58N0966  77BA   A   SLF 10.35  10.38  M.G.R.BUSSTAND      
+ 134  PON  58N1762  77BA   S   SLF 10.38  10.41  M.G.R.BUSSTAND      
+ 135  BCB  58N2362  A1     D   EXP 10.00  10.45  ARAPPALAYAM BUS STAN
+ 136  PDR  58N0991  77BA   A   SLF 10.40  10.45  M.G.R.BUSSTAND      
+ 137  PON  58N1688  75A    B   SLF 10.45  10.50  MELUR               
+ 138  PDR  58N1460  77A    E   SLF 10.45  10.50  VANDIYUR            
+ 139  TPK  58N2334  77BA   E   SLF 10.52  10.55  M.G.R.BUSSTAND      
+ 140  BCB  58N1780  66J    A   SLF 10.50  11.00  THIRUVATHAVUR       
+ 141  PON  58N2329  77B    D   SLF 10.45  11.00  M.G.R.BUSSTAND      
+ 142  ENR  58N1570  *25B   R   SLF 10.55  11.00  ANAIYUR             
+ 143  PDR  58N1433  77B    Y   SLF 10.50  11.05  M.G.R.BUSSTAND      
+ 144  PON  58N1807  77B    R   ORD 10.50  11.05  M.G.R.BUSSTAND      
+ 145  ENR  58N2347  77BA   F   SLF 11.06  11.09  M.G.R.BUSSTAND      
+ 146  MLR  58N1654  75A    D   SLF 11.05  11.10  MELUR               
+ 147  PDK  58N1441  77B    E   SLF 10.55  11.10  M.G.R.BUSSTAND      
+ 148  MCB  58N1384  77BA   A   EXP 11.10  11.12  M.G.R.BUSSTAND      
+ 149  ENR  58N1642  77B    M   SLF 11.00  11.15  M.G.R.BUSSTAND      
+ 150  ENR  58N2361  A1     G   EXP 10.30  11.15  ARAPPALAYAM BUS STAN
+ 151  PDR  58N1494  77B    L   SLF 11.05  11.20  M.G.R.BUSSTAND      
+ 152  PON  58N1797  77B    J   SLF 11.05  11.22  M.G.R.BUSSTAND      
+ 153  SIP  58N1681  77BA   A   SLF 11.20  11.23  M.G.R.BUSSTAND      
+ 154  PDR  58N1445  77B    X   SLF 11.10  11.25  M.G.R.BUSSTAND      
+ 155  PON  58N2333  77B    G   ORD 11.15  11.30  M.G.R.BUSSTAND      
+ 156  PDR  58N1482  77B    N   SLF 11.15  11.30  M.G.R.BUSSTAND     
+ 157  BCB  58N2362  A1     D   EXP 10.45  11.30  ARAPPALAYAM BUS STAN
+ 158  PON  58N1708  77BA   I   SLF 11.25  11.35  M.G.R.BUSSTAND      
+ 159  PON  58N1789  77BA   B   SLF 11.34  11.37  M.G.R.BUSSTAND      
+ 160  PDK  58N2340  77B    T   SLF 11.38  11.43  M.G.R.BUSSTAND      
+ 161  BCB  58N1747  77B    H   SLF 11.30  11.45  M.G.R.BUSSTAND      
+ 162  PDR  58N1543  77B    O   SLF 11.35  11.50  M.G.R.BUSSTAND      
+ 163  BCB  58N1717  77B    P   SLF 11.30  11.52  M.G.R.BUSSTAND      
+ 164  PDR  58N0991  77BA   A   SLF 11.50  11.55  M.G.R.BUSSTAND      
+ 165  PDK  58N1576  77B    K   SLF 11.40  11.55  M.G.R.BUSSTAND      
+ 166  PON  58N1762  77BA   S   SLF 11.51  11.56  M.G.R.BUSSTAND      
+ 167  MCB  58N2346  77B    U   SLF 11.53  11.58  M.G.R.BUSSTAND      
+ 168  ENR  58N2361  A1     G   EXP 11.15  12.00  ARAPPALAYAM BUS STAN
+ 169  PDR  58N1635  7P     Q   SLF 11.45  12.08  M.G.R.BUSSTAND      
+ 170  PON  58N2329  77B    D   SLF 12.05  12.10  M.G.R.BUSSTAND      
+ 171  TPK  58N2334  77BA   E   SLF 12.05  12.10  M.G.R.BUSSTAND      
+ 172  PDR  58N1433  77B    Y   SLF 12.10  12.15  M.G.R.BUSSTAND      
+ 173  PON  58N1807  77B    R   ORD 12.10  12.15  M.G.R.BUSSTAND      
+ 174  BCB  58N2362  A1     D   EXP 11.30  12.15  ARAPPALAYAM BUS STAN
+ 175  PDK  58N1441  77B    E   SLF 12.15  12.20  M.G.R.BUSSTAND      
+ 176  ENR  58N2347  77BA   F   SLF 12.19  12.24  M.G.R.BUSSTAND      
+ 177  ENR  58N1642  77B    M   SLF 12.20  12.25  M.G.R.BUSSTAND      
+ 178  PDR  58N1494  77B    L   SLF 12.25  12.30  M.G.R.BUSSTAND      
+ 179  BCB  58N1713  66J    B   SLF 12.20  12.35  THIRUVATHAVUR       
+ 180  PDR  58N1445  77B    X   SLF 12.30  12.35  M.G.R.BUSSTAND      
+ 181  PON  58N1797  77B    J   SLF 12.32  12.38  M.G.R.BUSSTAND      
+ 182  SIP  58N1681  77BA   A   SLF 12.33  12.38  M.G.R.BUSSTAND      
+ 183  PON  58N2333  77B    G   ORD 12.35  12.40  M.G.R.BUSSTAND      
+ 184  PDR  58N1482  77B    N   SLF 12.35  12.40  M.G.R.BUSSTAND      
+ 185  PON  58N1708  77BA   I   SLF 12.40  12.45  M.G.R.BUSSTAND      
+ 186  ENR  58N2361  A1     G   EXP 12.00  12.50  ARAPPALAYAM BUS STAN
+ 187  PON  58N1789  77BA   B   SLF 12.47  12.50  M.G.R.BUSSTAND      
+ 188  PDK  58N2340  77B    T   SLF 12.48  12.53  M.G.R.BUSSTAND      
+ 189  BCB  58N1747  77B    H   SLF 12.50  12.55  M.G.R.BUSSTAND      
+ 190  PDR  58N1543  77B    O   SLF 12.55  13.00  M.G.R.BUSSTAND      
+ 191  ENR  58N1570  77J    R   SLF 12.45  13.00  ANAIYUR             
+ 192  BCB  58N2362  A1     D   EXP 12.15  13.00  ARAPPALAYAM BUS STAN
+ 193  PDR  58N0991  77BA   A   SLF 13.00  13.05  M.G.R.BUSSTAND      
+ 194  PDK  58N1576  77B    K   SLF 13.00  13.05  M.G.R.BUSSTAND      
+ 195  MCB  58N2346  77B    U   SLF 13.03  13.08  M.G.R.BUSSTAND      
+ 196  PON  58N2329  77B    D   SLF 13.15  13.20  M.G.R.BUSSTAND      
+ 197  PON  58N1762  77BA   S   SLF 13.06  13.20  M.G.R.BUSSTAND      
+ 198  PDR  58N1433  77B    Y   SLF 13.20  13.25  M.G.R.BUSSTAND      
+ 199  PDR  58N1635  7P     Q   SLF 13.23  13.28  M.G.R.BUSSTAND      
+ 200  PDR  58N1460  77BA   E   SLF 12.00  13.35  M.G.R.BUSSTAND      
+ 201  ENR  58N1642  77B    M   SLF 13.30  13.35  M.G.R.BUSSTAND      
+ 202  PON  58N1807  77B    R   ORD 13.20  13.35  M.G.R.BUSSTAND      
+ 203  ENR  58N2361  A1     G   EXP 12.50  13.35  ARAPPALAYAM BUS STAN
+ 204  PDK  58N1441  77B    E   SLF 13.25  13.40  M.G.R.BUSSTAND      
+ 205  ENR  58N2347  77BA   F   SLF 13.34  13.44  M.G.R.BUSSTAND      
+ 206  MLR  58N1654  75A    D   SLF 13.25  13.45  MELUR               
+ 207  BCB  58N2362  A1     D   EXP 13.00  13.45  ARAPPALAYAM BUS STAN
+ 208  PDR  58N1494  77B    L   SLF 13.45  13.50  M.G.R.BUSSTAND      
+ 209  PDR  58N1445  77B    X   SLF 13.50  13.55  M.G.R.BUSSTAND      
+ 210  PON  58N1797  77B    J   SLF 13.43  13.58  M.G.R.BUSSTAND      
+ 211  BCB  58N1780  66J    A   SLF 13.35  14.00  THIRUVATHAVUR       
+ 212  PON  58N2333  77B    G   ORD 13.45  14.00  M.G.R.BUSSTAND      
+ 213  PDR  58N1482  77B    N   SLF 14.00  14.05  M.G.R.BUSSTAND      
+ 214  PON  58N1708  77BA   I   SLF 13.50  14.05  M.G.R.BUSSTAND      
+ 215  BCB  58N1717  77B    P   SLF 12.57  14.08  M.G.R.BUSSTAND      
+ 216  PDR  58N1543  77B    O   SLF 14.05  14.10  M.G.R.BUSSTAND      
+ 217  PON  58N1789  77BA   B   SLF 14.02  14.12  M.G.R.BUSSTAND      
+ 218  PDK  58N2340  77B    T   SLF 14.08  14.13  M.G.R.BUSSTAND      
+ 219  PON  58N1688  77B    B   SLF 12.55  14.15  M.G.R.BUSSTAND      
+ 220  BCB  58N1747  77B    H   SLF 14.00  14.15  M.G.R.BUSSTAND      
+
+
+
+
